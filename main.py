@@ -2,6 +2,8 @@ import argparse
 from itertools import count
 
 import gym
+import gym_reacher2
+import gym_throwandpush
 import scipy.optimize
 
 import torch
@@ -10,7 +12,9 @@ from replay_memory import Memory
 from running_state import ZFilter
 from torch.autograd import Variable
 from trpo import trpo_step
+from visualize import visdom_plot
 from utils import *
+import numpy as np
 
 torch.utils.backcompat.broadcast_warning.enabled = True
 torch.utils.backcompat.keepdim_warning.enabled = True
@@ -20,7 +24,7 @@ torch.set_default_tensor_type('torch.DoubleTensor')
 parser = argparse.ArgumentParser(description='PyTorch actor-critic example')
 parser.add_argument('--gamma', type=float, default=0.995, metavar='G',
                     help='discount factor (default: 0.995)')
-parser.add_argument('--env-name', default="Reacher-v1", metavar='G',
+parser.add_argument('--name', default="Reacher-v1", metavar='G',
                     help='name of the environment to run')
 parser.add_argument('--tau', type=float, default=0.97, metavar='G',
                     help='gae (default: 0.97)')
@@ -38,9 +42,57 @@ parser.add_argument('--render', action='store_true',
                     help='render the environment')
 parser.add_argument('--log-interval', type=int, default=1, metavar='N',
                     help='interval between training status logs (default: 10)')
+parser.add_argument('--vis-interval', type=int, default=100,
+                    help='vis interval, one log per n updates (default: 100)')
+parser.add_argument('--vis', action='store_true', default=True,
+                    help='disables visdom visualization')
 args = parser.parse_args()
 
-env = gym.make(args.env_name)
+# if args.vis:
+#     from visdom import Visdom
+#     viz = Visdom()
+#     win = None
+name = args.name
+env = gym.make(name)
+
+if name == 'Reacher2-v1':
+    env.env._init( # real robot
+        torque0=200, # torque of joint 1
+        torque1=200,  # torque of joint 2
+        colors={
+            "arenaBackground": ".27 .27 .81",
+            "arenaBorders": "1.0 0.8 0.4",
+            "arm0": "0.9 0.6 0.9",
+            "arm1": "0.9 0.9 0.6"
+        },
+        topDown=False
+    )
+elif name == 'HalfCheetah2-v0':
+    env.env._init( # real robot
+        torques={
+            "bthigh": 1200,
+            "bshin": 9,
+            "bfoot": 600,
+            "fthigh": 12,
+            "fshin": 600,
+            "ffoot": 3
+        },
+        colored=True
+    )
+elif name == 'Pusher2-v0':
+    env.env._init( # real robot
+        torques={
+            "r_shoulder_pan_joint": 0.1,
+            "r_shoulder_lift_joint": 500,
+            "r_upper_arm_roll_joint": 0.1,
+            "r_elbow_flex_joint": 500,
+            "r_forearm_roll_joint": 0.1,
+            "r_wrist_flex_joint": 500,
+            "r_wrist_roll_joint": 0.1
+        },
+        topDown=True,
+        colored=True
+    )
 
 num_inputs = env.observation_space.shape[0]
 num_actions = env.action_space.shape[0]
@@ -71,6 +123,7 @@ def update_params(batch):
     prev_return = 0
     prev_value = 0
     prev_advantage = 0
+
     for i in reversed(range(rewards.size(0))):
         returns[i] = rewards[i] + args.gamma * prev_return * masks[i]
         deltas[i] = rewards[i] + args.gamma * prev_value * masks[i] - values.data[i]
@@ -127,6 +180,7 @@ def update_params(batch):
 
 running_state = ZFilter((num_inputs,), clip=5)
 running_reward = ZFilter((1,), demean=False, clip=10)
+rewards_out = []
 
 for i_episode in count(1):
     memory = Memory()
@@ -166,7 +220,12 @@ for i_episode in count(1):
     reward_batch /= num_episodes
     batch = memory.sample()
     update_params(batch)
+    rewards_out.append(reward_batch)
 
     if i_episode % args.log_interval == 0:
         print('Episode {}\tLast reward: {}\tAverage reward {:.2f}'.format(
             i_episode, reward_sum, reward_batch))
+        np.savez('rewards_trpo_{}'.format(name), np.array(rewards_out))
+
+    # if j % args.vis_interval == 0:
+    #     win = visdom_plot(viz, win, args.log_dir, args.env_name, args.algo)
